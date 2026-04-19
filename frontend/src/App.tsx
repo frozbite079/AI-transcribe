@@ -3,16 +3,16 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback, createContext, useContext } from 'react';
 import WaveSurfer from 'wavesurfer.js';
-import { motion } from 'motion/react';
-import { 
-  Upload, 
-  Download, 
-  Play, 
-  Pause, 
-  Trash2, 
-  Plus, 
+import { motion, AnimatePresence } from 'motion/react';
+import {
+  Upload,
+  Download,
+  Play,
+  Pause,
+  Trash2,
+  Plus,
   Minus,
   ChevronLeft,
   ChevronRight,
@@ -35,17 +35,27 @@ import {
   RotateCw,
   ShieldAlert,
   BarChart3,
-  LogOut
+  LogOut,
 } from 'lucide-react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
-import { BrowserRouter, Routes, Route, Link, useNavigate, useLocation, useOutletContext } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Link, useNavigate, useLocation, Outlet, useOutletContext } from 'react-router-dom';
 import AdminDashboard from './components/AdminDashboard';
 import AuthPage from './components/AuthPage';
 import UserDashboard from './components/UserDashboard';
 import ProfileSettings from './components/ProfileSettings';
 import { cn } from './lib/utils';
+import { useAuth } from './contexts/AuthContext';
+import { useProjects } from './contexts/ProjectContext';
+import { projectsService } from './services/projects';
+import { api } from './lib/api';
+
+declare global {
+  interface Window {
+    GEMINI_API_KEY: string;
+  }
+}
 
 interface CaptionSegment {
   id: string;
@@ -84,10 +94,8 @@ export default function App() {
   );
 }
 
-import { Outlet } from 'react-router-dom';
-
 function Layout() {
-  const [isLoggedIn, setIsLoggedIn] = useState(true); // Mocking logged in state
+  const { user, isAuthenticated, logout } = useAuth();
   const [showProfileMenu, setShowProfileMenu] = useState(false);
   const location = useLocation();
   const navigate = useNavigate();
@@ -108,17 +116,17 @@ function Layout() {
           </Link>
           
           <div className="flex items-center gap-3">
-            {isLoggedIn ? (
+            {isAuthenticated ? (
               <div className="relative">
                 <button 
                   onClick={() => setShowProfileMenu(!showProfileMenu)}
                   className="flex items-center gap-3 p-1 pr-3 rounded-full hover:bg-zinc-50 transition-all border border-transparent hover:border-zinc-100 active:scale-95"
                 >
                   <div className="w-9 h-9 rounded-full bg-indigo-600 text-white flex items-center justify-center font-bold text-xs shadow-md">
-                    JD
+                    {user?.name?.charAt(0)?.toUpperCase() || 'U'}
                   </div>
                   <div className="hidden md:block text-left">
-                    <p className="text-xs font-black text-zinc-900 leading-none">John Doe</p>
+                    <p className="text-xs font-black text-zinc-900 leading-none">{user?.name || 'User'}</p>
                     <p className="text-[10px] font-bold text-indigo-500 uppercase tracking-widest mt-0.5">Pro Plan</p>
                   </div>
                 </button>
@@ -152,7 +160,7 @@ function Layout() {
                       <div className="border-t border-zinc-50 my-1"></div>
                       <button 
                         onClick={() => {
-                          setIsLoggedIn(false);
+                          logout();
                           setShowProfileMenu(false);
                           navigate('/login');
                         }}
@@ -180,7 +188,7 @@ function Layout() {
       </nav>
 
       <main className="pt-20">
-        <Outlet context={{ isLoggedIn, setIsLoggedIn }} />
+        <Outlet context={{ isLoggedIn: isAuthenticated, setIsLoggedIn: logout }} />
       </main>
     </div>
   );
@@ -188,16 +196,17 @@ function Layout() {
 
 function MainApp() {
   const { isLoggedIn, setIsLoggedIn } = useOutletContext<any>();
+  const { currentProject, setCurrentProject, createProject, refreshProject } = useProjects();
   const [audioFile, setAudioFile] = useState<File | null>(null);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [segments, setSegments] = useState<CaptionSegment[]>([]);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
-  const [threshold, setThreshold] = useState(0.03); // Lower default threshold
-  const [minSpeechDuration, setMinSpeechDuration] = useState(0.1); // 100ms for words
-  const [minSilenceDuration, setMinSilenceDuration] = useState(0.05); // 50ms for gaps
-  const [padding, setPadding] = useState(0.05); // 50ms padding
+  const [threshold, setThreshold] = useState(0.03);
+  const [minSpeechDuration, setMinSpeechDuration] = useState(0.1);
+  const [minSilenceDuration, setMinSilenceDuration] = useState(0.05);
+  const [padding, setPadding] = useState(0.05);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [transcript, setTranscript] = useState('');
   const [isAligning, setIsAligning] = useState(false);
@@ -210,6 +219,7 @@ function MainApp() {
   const [showDownloadModal, setShowDownloadModal] = useState(false);
   const [userData, setUserData] = useState({ name: '', email: '', phone: '', countryCode: '+91' });
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
+  const [isCreatingProject, setIsCreatingProject] = useState(false);
 
   // Studio States
   const [fontFamily, setFontFamily] = useState('Inter');
@@ -344,6 +354,8 @@ function MainApp() {
     setActiveTab('captions');
     setIsTranscribing(false);
     setFormErrors({});
+    // Reset project context
+    setCurrentProject(null);
     // Reset studio
     setFontFamily('Inter');
     setFontSize(48);
@@ -375,61 +387,26 @@ function MainApp() {
   const wavesurfer = useRef<WaveSurfer | null>(null);
 
   const transcribeAudio = async () => {
-    if (!audioFile) return;
+    if (!currentProject) return;
     setIsTranscribing(true);
     setActiveTab('transcript');
     transcriptionAbortRef.current = new AbortController();
 
     try {
-      const { GoogleGenAI } = await import("@google/genai");
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
-      
-      const arrayBuffer = await audioFile.arrayBuffer();
-      const base64Data = btoa(
-        new Uint8Array(arrayBuffer)
-          .reduce((data, byte) => data + String.fromCharCode(byte), '')
+      const { transcript: resultTranscript, language } = await projectsService.transcribe(
+        currentProject.id,
+        aiModel === 'gemini-3.1-pro-preview' ? 'gemini-3.1-pro-preview' : 
+        aiModel === 'gemini-3-flash-preview' ? 'gemini-3-flash-preview' : 'gemini-3.1-flash-lite-preview'
       );
-
-      const prompt = `
-        Analyze this audio file.
-        1. Detect the language of the speech. If it's a mix of Hindi and English, call it "Hinglish".
-        2. Provide a full, accurate transcript of the speech.
-        3. CRITICAL: Use "Hinglish" formatting. If the speaker says a Hindi word, write it in Hindi (Devanagari script). If they say an English word, write it in English (Latin script).
-        4. Capture the speaking style, including pauses and emphasis, in the text formatting if possible.
-        
-        Return the result as a JSON object with two fields:
-        "language": The detected language name (e.g., "Hinglish", "Hindi", "English").
-        "transcript": The full text transcript in mixed script (Hindi + English).
-      `;
-
-      const result_promise = (ai as any).models.generateContent({
-        model: aiModel,
-        contents: [
-          {
-            parts: [
-              { text: prompt },
-              {
-                inlineData: {
-                  mimeType: audioFile.type || 'audio/mpeg',
-                  data: base64Data
-                }
-              }
-            ]
-          }
-        ],
-        config: {
-          responseMimeType: "application/json",
-        }
-      });
-
-      const response = await result_promise;
+      
       if (transcriptionAbortRef.current?.signal.aborted) return;
 
-      const result = JSON.parse(response.text || '{}');
-      if (result.transcript) {
-        setTranscript(result.transcript);
-        setDetectedLanguage(result.language);
-      }
+      setTranscript(resultTranscript);
+      setDetectedLanguage(language);
+
+      // Also update project in backend with transcript
+      await projectsService.update(currentProject.id, { transcript_text: resultTranscript });
+      await refreshProject(currentProject.id);
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') return;
       console.error('Error transcribing audio:', error);
@@ -439,81 +416,32 @@ function MainApp() {
   };
 
   const alignTranscript = async () => {
-    if (!transcript || !audioFile) return;
+    if (!currentProject || !transcript) return;
     setIsAligning(true);
     alignmentAbortRef.current = new AbortController();
 
     try {
-      const { GoogleGenAI } = await import("@google/genai");
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
-      
-      const arrayBuffer = await audioFile.arrayBuffer();
-      const base64Data = btoa(
-        new Uint8Array(arrayBuffer)
-          .reduce((data, byte) => data + String.fromCharCode(byte), '')
+      const { segments: resultSegments } = await projectsService.align(
+        currentProject.id,
+        transcript,
+        aiModel === 'gemini-3.1-pro-preview' ? 'gemini-3.1-pro-preview' : 
+        aiModel === 'gemini-3-flash-preview' ? 'gemini-3-flash-preview' : 'gemini-3.1-flash-lite-preview'
       );
 
-      const prompt = `
-        I have an audio file and its transcript. 
-        TRANSCRIPT: "${transcript}"
-        
-        CRITICAL TASK: PERFORM PRECISION FORCED ALIGNMENT
-        1. Analyze the audio second-by-second with extreme care.
-        2. Match every single word in the transcript to its exact timestamp in the audio.
-        3. Group these words into natural, readable caption segments (typically 3-6 words per segment).
-        4. For each segment, provide the EXACT start time (when the first word begins) and the EXACT end time (when the last word ends).
-        5. The timings must be accurate to the millisecond (e.g., 1.245).
-        6. Ensure there are NO overlapping segments.
-        7. Maintain the original Hinglish script (Hindi in Devanagari, English in Latin).
-        8. If there are pauses between sentences or phrases, ensure the segments reflect that—do NOT extend a segment's end time into a period of silence.
-        9. Every word from the transcript MUST be included in the segments in the correct order.
-        
-        Return the result as a JSON object with a "segments" field, which is an array of objects:
-        {
-          "segments": [
-            {
-              "start": number (seconds, e.g. 1.45),
-              "end": number (seconds, e.g. 3.21),
-              "text": "The phrase text"
-            }
-          ]
-        }
-      `;
-
-      const result_promise = (ai as any).models.generateContent({
-        model: aiModel,
-        contents: [
-          {
-            parts: [
-              { text: prompt },
-              {
-                inlineData: {
-                  mimeType: audioFile.type || 'audio/mpeg',
-                  data: base64Data
-                }
-              }
-            ]
-          }
-        ],
-        config: {
-          responseMimeType: "application/json",
-        }
-      });
-
-      const response = await result_promise;
       if (alignmentAbortRef.current?.signal.aborted) return;
 
-      const result = JSON.parse(response.text || '{}');
-      
-      if (result.segments && Array.isArray(result.segments)) {
-        const newSegments = result.segments.map((seg: any, i: number) => ({
+      if (resultSegments && Array.isArray(resultSegments)) {
+        const newSegments = resultSegments.map((seg: any, i: number) => ({
           id: `seg-${Date.now()}-${i}`,
           start: parseFloat(seg.start),
           end: parseFloat(seg.end),
           text: seg.text
         }));
         setSegments(newSegments);
-        setUndoStack([{ segments: newSegments, fontFamily, fontSize, fontColor, strokeColor, strokeWidth, textShadow, textAlign, textPosition, transitionType }]);
+
+        // Update project in backend
+        await projectsService.update(currentProject.id, { segments: newSegments });
+        await refreshProject(currentProject.id);
       }
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') return;
@@ -550,14 +478,28 @@ function MainApp() {
     };
   }, [audioUrl]);
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
-      setAudioFile(file);
-      const url = URL.createObjectURL(file);
-      setAudioUrl(url);
-      setSegments([]); // Reset segments on new file
+    if (!file) return;
+
+    setAudioFile(file);
+    setIsCreatingProject(true);
+
+    try {
+      // Create project in backend
+      const project = await createProject(file.name, file);
+      setCurrentProject(project);
+
+      // Get audio URL from backend
+      const audioUrl = await projectsService.getAudioUrl(project.id);
+      setAudioUrl(audioUrl);
       
+      // Reset other state
+      setSegments([]);
+      setTranscript('');
+      setDetectedLanguage(null);
+      setActiveTab('captions');
+
       // Initialize history with empty segments
       const initialState: HistoryState = {
         segments: [],
@@ -573,6 +515,13 @@ function MainApp() {
       };
       setUndoStack([initialState]);
       setRedoStack([]);
+    } catch (error) {
+      console.error('Failed to create project:', error);
+      // Still allow local preview even if backend fails
+      const url = URL.createObjectURL(file);
+      setAudioUrl(url);
+    } finally {
+      setIsCreatingProject(false);
     }
   };
 
@@ -924,13 +873,22 @@ function MainApp() {
               type="file"
               accept="audio/mp3,audio/wav,audio/mpeg"
               onChange={handleFileUpload}
-              className="absolute inset-0 opacity-0 cursor-pointer"
+              disabled={isCreatingProject}
+              className="absolute inset-0 opacity-0 cursor-pointer disabled:cursor-not-allowed"
             />
             <div className="w-16 h-16 bg-zinc-100 rounded-2xl flex items-center justify-center text-zinc-400 group-hover:bg-indigo-50 group-hover:text-indigo-500 transition-all mb-4">
-              <Upload size={32} />
+              {isCreatingProject ? (
+                <div className="w-8 h-8 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin" />
+              ) : (
+                <Upload size={32} />
+              )}
             </div>
-            <h2 className="text-xl font-bold mb-2">Upload Audio File</h2>
-            <p className="text-zinc-500 text-sm">MP3 or WAV files supported</p>
+            <h2 className="text-xl font-bold mb-2">
+              {isCreatingProject ? 'Creating Project...' : 'Upload Audio File'}
+            </h2>
+            <p className="text-zinc-500 text-sm">
+              {isCreatingProject ? 'Please wait while we set up your project' : 'MP3 or WAV files supported'}
+            </p>
           </div>
         ) : (
           <div className="space-y-8">

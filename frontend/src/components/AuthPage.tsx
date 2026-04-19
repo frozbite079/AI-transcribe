@@ -13,10 +13,8 @@ import {
   AlertCircle
 } from 'lucide-react';
 import { useNavigate, Link } from 'react-router-dom';
-import axios from 'axios';
 import { cn } from '../lib/utils';
-
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+import { authService } from '../services/auth';
 
 type AuthMode = 'login' | 'signup';
 
@@ -40,45 +38,36 @@ export default function AuthPage({ mode: initialMode = 'login' }: { mode?: AuthM
     setError(null);
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setLoading(true);
-    setError(null);
+   const handleSubmit = async (e: React.FormEvent) => {
+     e.preventDefault();
+     setLoading(true);
+     setError(null);
 
-    try {
-      const endpoint = mode === 'login' ? '/api/auth/login' : '/api/auth/register';
-      // Mocking successful auth for demonstration
-      // In production: await axios.post(`${API_BASE_URL}${endpoint}`, formData);
-      
-      await new Promise(resolve => setTimeout(resolve, 1500)); // Simulate API delay
-      
-      setSuccess(true);
-      setTimeout(() => {
-        navigate('/');
-      }, 1000);
-    } catch (err: any) {
-      setError(err.response?.data?.message || 'Authentication failed. Please check your credentials.');
-    } finally {
-      setLoading(false);
-    }
-  };
+     try {
+       if (mode === 'login') {
+         await authService.login({ email: formData.email, password: formData.password });
+       } else {
+         await authService.register({
+           name: formData.name,
+           email: formData.email,
+           mobile: formData.mobile,
+           password: formData.password
+         });
+       }
+       setSuccess(true);
+       setTimeout(() => {
+         navigate('/');
+       }, 1000);
+     } catch (err: any) {
+       setError(err.response?.data?.message || 'Authentication failed. Please check your credentials.');
+     } finally {
+       setLoading(false);
+     }
+   };
 
   const handleGoogleLogin = async () => {
-    try {
-      // According to oauth-integration guidelines
-      // Fetch OAuth URL from backend and open in popup
-      // const res = await axios.get(`${API_BASE_URL}/api/auth/google/url`);
-      // const { url } = res.data;
-      
-      const mockOAuthUrl = 'https://accounts.google.com/o/oauth2/v2/auth'; // Placeholder
-      const authWindow = window.open(mockOAuthUrl, 'google_oauth', 'width=500,height=600');
-      
-      if (!authWindow) {
-        setError('Popup blocked. Please allow popups for this site.');
-      }
-    } catch (err) {
-      setError('Failed to initialize Google Login.');
-    }
+    // Google OAuth not implemented in backend yet
+    setError('Google login is not available yet.');
   };
 
   return (
