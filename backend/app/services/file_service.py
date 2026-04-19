@@ -27,10 +27,13 @@ ALLOWED_MIME_TYPES = {
 
 
 def validate_audio_file(file: UploadFile) -> None:
-    if file.content_type not in ALLOWED_MIME_TYPES:
+    ext = os.path.splitext(file.filename)[1].lower() if file.filename else ""
+    allowed_exts = [".mp3", ".wav", ".ogg", ".flac", ".m4a", ".mp4"]
+    
+    if file.content_type not in ALLOWED_MIME_TYPES and ext not in allowed_exts:
         raise HTTPException(
             status_code=400,
-            detail=f"Unsupported file type: {file.content_type}. Allowed: {', '.join(ALLOWED_MIME_TYPES)}",
+            detail=f"Unsupported file type: {file.content_type}. Allowed: {', '.join(ALLOWED_MIME_TYPES)} or extensions {', '.join(allowed_exts)}",
         )
 
 

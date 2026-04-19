@@ -479,6 +479,11 @@ function MainApp() {
   }, [audioUrl]);
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!isAuthenticated) {
+      alert("Please Sign In or Get Started to upload and transcribe audio.");
+      return;
+    }
+
     const file = e.target.files?.[0];
     if (!file) return;
 
